@@ -27,7 +27,6 @@ def main():
     parser.add_argument('-n', dest='number', type=int, action='store', default=3, help='number of password groups (default: 3)')
     parser.add_argument('-s', dest='service', action='store', default='', help='name of service for password')
     args = parser.parse_args()
-    print(args)
     if not getattr(args, 'user_list') == '':
         with open( getattr(args, 'user_list'), 'r') as file:
             count = len(file.readlines())
