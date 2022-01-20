@@ -61,7 +61,7 @@ class Parser():
                     self.parsedJson.key = "Key: " #key
                     try:
                         key += messages.get("data").partition("key=")[2]
-                        if key == '(null)'
+                        if key == '(null)':
                             key = 'Literally "null": '
                         self.parsedJson.key += key
                     except:
