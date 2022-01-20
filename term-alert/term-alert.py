@@ -1,18 +1,39 @@
 #!/usr/bin/env python
+import json
+from json import *
+import datetime
 import urwid
 from time import sleep
-from threading import Thread 
+from threading import Thread
 import re
 from os.path import exists
 
 MAX_ALERTS = 20
-FRAME_HEADER = "Term-Alert v2.0"
+FRAME_HEADER = "Term-Alert v2.1"
 TAB_SIZE = 4
-POLLING_RATE = 5
+POLLING_RATE = 1
 
 #files = ['user_mod.log']
-files = ['audit.log.parsed']
+files = ['/var/log/go-audit.log']
 
+class ParsedData:
+    def __init__(self):
+        self.refresh()
+
+    def refresh(self):
+        self.cwd = ""
+        self.cmd = ""
+        self.uid = ""
+        self.time = ""
+        self.key = ""
+
+    def is_valid(self):
+        if self.cwd and self.key and self.cmd and self.uid and self.time:
+            return True
+        return False
+    
+    def to_string(self):
+        return ("Time: {} \n cwd: {} \n cmd: {} \n uid: {} \n ".format(self.time, self.cwd, self.cmd, self.uid))
 
 class Parser():
     parsed_events = []
@@ -20,139 +41,73 @@ class Parser():
     def  __init__(self):
         for entry in files:
             Parser.files.update({entry : 0})
-    
+        self.parsedJson = ParsedData()
+        self.rawJson = []
+
+    def jsonArrayParser(self, jsonArray):
+        for item in jsonArray: #the entire json entry aka singular events that are logged
+            self.parsedJson.refresh() #flushing the dirt out
+            self.parsedJson.time = datetime.datetime.fromtimestamp(float(item.get("timestamp")))
+            for messages in item.get("messages"):
+                if messages.get("type") == 1327: #proctitle stuff
+                    proctitleHex = messages.get("data")
+                    try:
+                        self.parsedJson.cmd=bytes.fromhex(proctitleHex.replace("proctitle=", "")).decode("ascii").replace("\x00", " ")
+                    except:
+                        self.parsedJson.cmd=proctitleHex
+                if messages.get("type") == 1307: #self.cwd
+                    self.parsedJson.cwd = messages.get("data")
+                if messages.get("type") == 1300: #self.key and uid
+                    self.parsedJson.key = "Key: " #key
+                    try:
+                        key += messages.get("data").partition("key=")[2]
+                        if key == '(null)'
+                            key = 'Literally "null": '
+                        self.parsedJson.key += key
+                    except:
+                        self.parsedJson.key += "Unknown"
+                    try: #uid
+                        euid = messages.get("data").partition("euid=")[2].split()[0]
+                    except:
+                        euid = "N/A"
+                    try:
+                        auid = messages.get("data").partition("auid=")[2].split()[0]
+                    except:
+                        auid = "N/A"
+                    try:
+                        self.parsedJson.uid = "{}, originally {}".format(item.get("uid_map").get(euid), item.get("uid_map").get(auid))
+                    except:
+                        self.parsedJson.uid = "N/A"
+            if self.parsedJson.is_valid():
+                self.add_event(self.parsedJson)
+
     def parse(self, file_to_parse):
         if exists(file_to_parse):
             line_count = Parser.files.get(file_to_parse)
             lines = 0
             current_line = 0
+            self.rawJson = []
             with open(file_to_parse) as infile:
-                event = ''
                 for line in infile:
-                    if current_line >= line_count:
-                        if '----' in line:
-                            if event:
-                                self.add_event(event)
-                                event = ''
-                        else:
-                            start_index = 0 
-                            event += line[start_index:] + '\n'
-                    current_line+=1
-                if event:
-                    self.add_event(event)
+                    if current_line > line_count :
+                        self.rawJson.append(json.loads(line))
+                    elif current_line == line_count and len(Parser.parsed_events) == 0:
+                        self.rawJson.append(json.loads(line))
+                    current_line += 1
             Parser.files.update({file_to_parse : current_line})
-            return [] if current_line == line_count else Parser.parsed_events
+            if current_line == line_count:
+                return []
+            else:
+                self.jsonArrayParser(self.rawJson)
+                return Parser.parsed_events
         else:
             return []
 
     def add_event(self, event):
-        key = re.search('(?<= key=)(\w+)', event)
-        event_type = re.search(r'\b(?<=type=)(\w+)', event)
-        try:
-            if 'proctitle=grep' in event:
-                cmd = 'Command=\''+re.search('(?<= proctitle=)(.+)', event).group(0)+'\''
-                uid = re.search('auid=\w+ uid=\w+', event).group(0)
-                description = '\n' + uid.replace(' ', ', ') + '\n'
-                result = ('GREP Event: '+cmd, cmd+description)
-            elif key.group(0) == 'user_modification':
-                result = self.user_event(event)
-            elif key.group(0) == 'recon':
-                result = self.recon_event(event)
-            elif event_type.group(0) == 'USER_AUTH':
-                result = self.auth_event(event)
-            elif key.group(0) == 'rootcmd':
-                result = self.rootcmd_event(event)
-            else:
-                result = (key.group(0), event)
-        except AttributeError:
-            if event_type and event_type.group(0) == 'USER_AUTH':
-                result = self.auth_event(event)
-            else:
-                result = ('NO KNOWN FORMAT FOR EVENT', event)
-        Parser.parsed_events.append( result )
-
-    def rootcmd_event(self, event):
-        title = 'rootcmd: '
-        description = event
-        try:
-            m = re.search('(?<= proctitle=).+', event)
-            title += m.group(0).strip()
-        except AttributeError:
-            title += 'cannot determine command'
-        return (title, description)
-
-    def auth_event(self, event):
-        title = 'Unknown auth event'
-        description = ''
-        try:
-            acct = re.search('(?<= acct=)(\S+)', event).group(0)
-            exe = re.search('(?<= exe=)(\S+)', event).group(0)
-            addr = re.search('(?<= addr=)(\S+)', event).group(0)
-            description += 'Account: '+acct+'\n'
-            description += 'Command: '+exe+'\n'
-            description += 'Address: '
-            description += addr if not addr == '?' else 'localhost'+'\n'
-            description += 'key=USER_AUTH\n'
-            description += '\n'+event+'\n'
-            title += ': Acct = '+acct+' | exe = '+exe
-        except AttributeError:
-            return (title, description)
-        return ( title, description )
-
-    def recon_event(self, event):
-        key = 'recon'
-        pid = int(re.search('(?<= pid=)(\d+)', event).group(0))
-        ppid = int(re.search('(?<= ppid=)(\d+)', event).group(0))
-        title = 'Uknown RECON event'
-        description = ''
-        process_tree = [pid]
-        is_ssh = False
-        is_reverse_shell = False
-        found = True
-        while not ppid in (0, 1) and found:
-            found = False
-            for entry in TUI.alerts:
-                if entry.pid == ppid: 
-                    ppid = entry.ppid
-                    found = True
-                    TUI.header.contents[1][0].set_text(str(ppid))
-                    if '/ssh' in entry.message:
-                        is_ssh = True
-                    if '/nc' in entry.message:
-                        is_reverse_shell = True
-                    break;
-            process_tree.append(ppid)
-        
-        description += 'Full Process Tree:\n' + str(process_tree) + '\n'
-        description += 'Event info: key=recon\n'
-        description += '\n'+event+'\n'
-
-        if is_ssh:
-            title = 'Probably an ssh Session'
-        elif is_reverse_shell:
-            title = 'Probably a reverse Shell'
-        else:
-            title = 'Probably not a reverse Shell'
-        return ( title, description )
-
-    def user_event(self, event):
-        title = 'Unknown user event'
-        try:
-            m = re.search('(?<= proctitle=).+', event)
-            result = m.group(0).strip()
-            if 'useradd' in result or 'adduser' in result:
-                title = 'New user detected \''+ result[result.rindex(' ')+1:]+'\''
-            elif 'userdel' in result or 'deluser' in result:
-                title = 'User deleted \''+ result[result.rindex(' ')+1:]+'\''
-        except AttributeError:
-            title = m
-        try:
-            m = re.search('(?<=type=SYSCALL ).+', event)
-            description = m.group(0).strip()
-            description += '\n\n'+event+'\n'
-        except AttributeError:
-            description = m
-        return ( title, description )
+        if 'null' in event.key:
+            event.key += event.cmd[:event.cmd.index(' ')]
+        result = (event.key, event.to_string())
+        Parser.parsed_events.append(result)
 
 class PopUpDialog(urwid.WidgetWrap):
     """A dialog that appears with nothing but a close button """
@@ -185,18 +140,6 @@ class Alert(urwid.PopUpLauncher):
             lambda button: self.open_pop_up())
         self.pop_up = PopUpDialog('\n'+title+'\n',message)
         self.message = message
-        try:
-            self.pid = int(re.search('(?<= pid=)(\d+)', message).group(0))
-        except AttributeError:
-            self.pid = 0
-        try:
-            self.ppid = int(re.search('(?<= ppid=)(\d+)', message).group(0))
-        except AttributeError:
-            self.ppid = 0
-        try:
-            self.key = re.search('(?<= key=)(\w+)', message).group(0)
-        except AttributeError:
-            self.key = ''
         TUI.header.contents[1][0].set_text('Last event: '+str(Alert.count))
 
     def create_pop_up(self):
@@ -220,18 +163,17 @@ class TUI():
     palette = []
     placeholder = urwid.SolidFill()
     show_list = []
-    alerts = [] 
+    alerts = []
     filtered = []
     show_mode = False
     lb = None
     frame = None
     content = None
     loop = None
-    footer_search = None 
+    footer_search = None
     header = urwid.Columns([urwid.Text(FRAME_HEADER, align='left'), urwid.Text('Last event: '+str(Alert.count), align='center'), urwid.Text('', align='right')], dividechars=2)
     search_text = urwid.Edit('Search: ')
     search_button = urwid.Button('Search')
-
 
     def __init__(self):
         self.p = Parser()
@@ -359,7 +301,7 @@ class TUI():
                 if exists(check):
                     bg_color = 'c_bg'
                     streak = urwid.AttrMap(urwid.Text(('c_banner', u'nothing detected'), align='center'), 'c_streak')
-                    break;
+                    break
         else:
             streak = urwid.AttrMap(urwid.Text(('warning', u'Press any button...'), align='center'), 'warning')
         background = urwid.AttrMap(TUI.placeholder,  bg_color)
@@ -379,7 +321,6 @@ class TUI():
         if TUI.loop:
             TUI.loop.screen.clear()
             TUI.loop.widget = TUI.frame
-
 
     def update_ui(self, loop=None, user_data=None):
         self.change_screen() 
@@ -408,17 +349,17 @@ def start_tui():
    TUI() 
 
 def start_parser():
-   p = Parser()
-   while True:
-       for infile in files:
-           entry = 0
-           if TUI.status: 
-               res = p.parse(infile)
-               for alert in res:
-                   if entry >= len(TUI.alerts):
-                       TUI.alerts.append(Alert(alert[0], alert[1]))
-                   entry += 1
-               sleep(POLLING_RATE)
+    p = Parser()
+    while True:
+        for infile in files:
+            entry = 0
+            if TUI.status: 
+                res = p.parse(infile)
+                for alert in res:
+                    if entry >= len(TUI.alerts):
+                        TUI.alerts.append(Alert(alert[0], alert[1]))
+                    entry += 1
+                sleep(POLLING_RATE)
 
 if __name__=='__main__':
     main()
