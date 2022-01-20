@@ -104,7 +104,7 @@ class Parser():
             return []
 
     def add_event(self, event):
-        if 'null' in event.key:
+        if 'null' in event.key and not event.cmd.find(' ') == -1:
             event.key += event.cmd[:event.cmd.index(' ')]
         result = (event.key, event.to_string())
         Parser.parsed_events.append(result)
