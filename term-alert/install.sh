@@ -13,7 +13,7 @@ else
 fi
 pip3 install urwid
 git clone https://github.com/dbaseqp/cyber
-cd term-alert
+cd cyber/term-alert
 if [[ ! -z $SYSTEMCTL_EXIST ]]; then
     systemctl mask systemd-journald-audit.socket
     systemctl start auditd
