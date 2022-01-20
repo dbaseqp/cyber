@@ -60,7 +60,7 @@ class Parser():
                 if messages.get("type") == 1300: #self.key and uid
                     self.parsedJson.key = "Key: " #key
                     try:
-                        key += messages.get("data").partition("key=")[2]
+                        key = messages.get("data").partition("key=")[2]
                         if key == '(null)':
                             key = 'Literally "null": '
                         self.parsedJson.key += key
